@@ -7,25 +7,23 @@ from autograder.sdk.strategy_interface import AbstractTradingStrategy
 
 class MyTradingStrategy(AbstractTradingStrategy):
     """
-    An aggressive momentum-based strategy that trades frequently by making its
-    quotes proportional to market sentiment. It uses tighter spreads and faster
-    reactions to capitalize on short-term order flow.
+    An intelligent momentum strategy that introduces a confidence threshold and
+    dynamic inventory skewing to trade more effectively and manage risk.
     """
 
     def __init__(self):
-        """Initializes the strategy with more aggressive parameters."""
+        """Initializes the strategy with refined parameters."""
         super().__init__()
-        # Tighter base spread to increase trade frequency
-        self.base_spread = 2.5
-        # Lower inventory penalty to allow riding trends
-        self.inventory_multiplier = 0.05
-        # **NEW**: Proportional factor for sentiment. This is the core of the new logic.
-        self.sentiment_proportional_factor = 0.6
-        # Faster EMA to react more quickly to recent trades
-        self.ema_alpha = 0.5
-        # Multiplier for adjusting spread based on market volatility
-        self.volatility_spread_multiplier = 1.5
-        # Tracks the exponential moving average of net order flow
+        self.base_spread = 3.0
+        # A more aggressive inventory penalty to keep positions small
+        self.inventory_multiplier = 0.15
+        self.sentiment_proportional_factor = 0.7
+        self.ema_alpha = 0.4
+        self.volatility_spread_multiplier = 1.8
+        
+        # **NEW**: Only trade if the market sentiment signal is strong enough. Prevents trading on noise.
+        self.minimum_ema_threshold = 5.0
+        
         self.net_order_flow_ema = 0.0
 
     def on_game_start(self, config: Dict[str, Any]) -> None:
@@ -43,7 +41,10 @@ class MyTradingStrategy(AbstractTradingStrategy):
         """Main logic loop called to generate quotes."""
         markets = {}
         products = marketplace.get_products()
-        all_trades = marketplace.get_trade_history()
+        
+        # **BUG FIX**: Accessing the `all_trades` attribute directly, not calling a method.
+        all_trades = marketplace.all_trades
+        
         my_trades = marketplace.my_trades
         training_rolls = marketplace.training_rolls
         
@@ -57,19 +58,21 @@ class MyTradingStrategy(AbstractTradingStrategy):
                          sum(t.quantity for t in recent_trades if t.side == 'SELL')
         self.net_order_flow_ema = self.ema_alpha * net_order_flow + (1 - self.ema_alpha) * self.net_order_flow_ema
 
-        # **CRITICAL CHANGE**: Sentiment adjustment is now PROPORTIONAL to the EMA of order flow
-        # This makes the strategy much more reactive and less reliant on fixed thresholds.
-        sentiment_adjustment = self.net_order_flow_ema * self.sentiment_proportional_factor
+        sentiment_adjustment = 0.0
+        # **NEW LOGIC**: Only apply sentiment if the signal is strong enough to be confident.
+        if abs(self.net_order_flow_ema) > self.minimum_ema_threshold:
+            sentiment_adjustment = self.net_order_flow_ema * self.sentiment_proportional_factor
 
         for product in products:
-            # **BUG FIX**: Accessing product.id instead of product.product_id
             fair_value = self.calculate_fair_value(product.id, training_rolls, marketplace.round_info)
             
             if fair_value is not None:
                 adjusted_fair_value = fair_value + sentiment_adjustment
                 
                 position = my_trades.get_position(product.id)
-                inventory_adjustment = position * self.inventory_multiplier
+                # **NEW LOGIC**: The inventory penalty is now quadratic, making it much more aggressive
+                # at larger positions to force the strategy back towards neutral.
+                inventory_adjustment = np.sign(position) * (position**2) * self.inventory_multiplier
                 adjusted_fair_value -= inventory_adjustment
 
                 bid_price = adjusted_fair_value - dynamic_spread / 2
@@ -85,20 +88,24 @@ class MyTradingStrategy(AbstractTradingStrategy):
             parts = product_id.split(',')
             product_type = parts[1]
             
-            expected_roll = np.mean(training_rolls) if training_rolls else 3.5
+            # Use a robust estimate for the expected roll
+            expected_roll = np.mean(training_rolls) if training_rolls else 5000.5
             total_subrounds = round_info.get("num_sub_rounds", 10)
             total_rolls_per_round = 20000
 
             if product_type == 'F':
-                num_subrounds = int(parts[2])
-                return expected_roll * (total_rolls_per_round / total_subrounds * num_subrounds)
+                # Futures valuation based on expected sum
+                return expected_roll * total_rolls_per_round
             
             elif product_type in ['C', 'P']:
                 strike = float(parts[2])
-                volatility = np.std(training_rolls) / 10000 if training_rolls and np.std(training_rolls) > 0 else 0.05
+                # Use a robust estimate for volatility
+                volatility = np.std(training_rolls) if len(training_rolls) > 1 else 2886.0
                 underlying_price = expected_roll * total_rolls_per_round
+                
                 current_sub_round = round_info.get("current_sub_round", 1)
-                time_to_expiry = max(0.001, (total_subrounds - current_sub_round + 1) / total_subrounds)
+                # Ensure time_to_expiry is a small positive number even in the last round
+                time_to_expiry = max(1e-6, (total_subrounds - current_sub_round + 1) / total_subrounds)
 
                 d1 = (np.log(underlying_price / strike) + (0.5 * volatility ** 2) * time_to_expiry) / (volatility * np.sqrt(time_to_expiry))
                 d2 = d1 - volatility * np.sqrt(time_to_expiry)
@@ -109,7 +116,8 @@ class MyTradingStrategy(AbstractTradingStrategy):
                     return strike * norm.cdf(-d2) - underlying_price * norm.cdf(-d1)
             
             return None
-        except (ValueError, IndexError, ZeroDivisionError):
+        except (ValueError, IndexError, ZeroDivisionError, OverflowError):
+            # Catch more potential errors for robustness
             return None
 
     def on_round_end(self, result: Dict[str, Any]) -> None:
