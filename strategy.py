@@ -3,36 +3,9 @@ from scipy.stats import norm
 from typing import Dict, Tuple, List, Any
 from abc import ABC, abstractmethod
 
-# Provided Data Classes (for context)
-class Trade:
-    def __init__(self, product_id: str, quantity: float, price: float, round_traded: int, buyer_id: str, seller_id: str):
-        self.product_id = product_id
-        self.quantity = quantity
-        self.price = price
-        self.round_traded = round_traded
-        self.buyer_id = buyer_id
-        self.seller_id = seller_id
-
-class Product:
-    def __init__(self, product_id: str):
-        self.product_id = product_id
-
-class AbstractTradingStrategy(ABC):
-    @abstractmethod
-    def on_game_start(self, config: Dict[str, Any]) -> None:
-        pass
-
-    @abstractmethod
-    def make_market(self, marketplace: Any, training_rolls: Any, my_trades: Any, current_rolls: Any, round_info: Any) -> Dict:
-        pass
-
-    @abstractmethod
-    def on_round_end(self, result: Dict[str, Any]) -> None:
-        pass
-
-    @abstractmethod
-    def on_game_end(self, summary: Dict[str, Any]) -> None:
-        pass
+# Import the official AbstractTradingStrategy from the autograder's SDK
+# This is the primary fix for the error you encountered.
+from autograder.sdk.strategy_interface import AbstractTradingStrategy
 
 # ---------------------------------------------------------------------------- #
 #                          STRATEGY IMPLEMENTATION                             #
@@ -164,13 +137,15 @@ class MyTradingStrategy(AbstractTradingStrategy):
             
             # --- Calculate Theoretical Fair Value (s) ---
             fair_value = 0.0
-            product_type = parts[0] if parts else ''
+            # Correctly parse the product type from the ID string (e.g., 'S,F,5' -> 'F')
+            product_type = parts[1]
             
             if product_type == 'F': # Future
                 fair_value = mu_sum
             elif product_type in ['C', 'P']: # Call or Put Option
                 try:
-                    strike_price = float(parts[1]) if len(parts) > 1 else 0.0
+                    # Correctly parse the strike price (e.g., 'S,C,5,55' -> 55)
+                    strike_price = float(parts[2])
                     if product_type == 'C':
                         fair_value = self._calculate_call_fair_value(mu_sum, sigma_sum, strike_price)
                     else: # 'P'
