@@ -17,15 +17,17 @@ class MyTradingStrategy(AbstractTradingStrategy):
         """Initializes the strategy's parameters."""
         super().__init__()
         # Extremely wide base spread - only trade with huge edge
-        self.base_spread = 200.0
+        self.base_spread = 500.0
         # Minimal inventory management when we have edge
-        self.inventory_multiplier = 0.02
+        self.inventory_multiplier = 0.01
         # Total number of dice rolls in a full round
         self.TOTAL_ROLLS = 20000
-        # Only trade when we have NEAR-CERTAIN confidence (almost end of round)
-        self.min_confidence_to_trade = 0.95
+        # Only trade when we have ABSOLUTE confidence (very end of round)
+        self.min_confidence_to_trade = 0.98
         # When we have massive edge, use extremely tight spreads
-        self.aggressive_spread = 0.2
+        self.aggressive_spread = 0.1
+        # Mean reversion threshold - only trade if deviation is huge
+        self.mean_reversion_threshold = 0.1  # 10% deviation from expected
 
     def on_game_start(self, config: Dict[str, Any]) -> None:
         """Called once at the start of the game."""
@@ -60,12 +62,25 @@ class MyTradingStrategy(AbstractTradingStrategy):
         # Confidence grows from 0 to 1 as the round progresses.
         confidence_level = num_current_rolls / self.TOTAL_ROLLS
         
-        # Only trade if we have NEAR-CERTAIN confidence (almost end of round)
+        # Only trade if we have ABSOLUTE confidence (very end of round)
         if confidence_level < self.min_confidence_to_trade:
             return {}
         
+        # --- Mean Reversion Edge Detection ---
+        # Calculate expected final sum based on current data
+        expected_final_sum = updated_mean * self.TOTAL_ROLLS
+        current_sum = sum(current_rolls)
+        remaining_rolls = self.TOTAL_ROLLS - num_current_rolls
+        expected_remaining = updated_mean * remaining_rolls
+        projected_final = current_sum + expected_remaining
+        
+        # Only trade if we have a MASSIVE mean reversion opportunity
+        deviation = abs(projected_final - expected_final_sum) / expected_final_sum
+        if deviation < self.mean_reversion_threshold:
+            return {}
+        
         # When we have massive edge, use extremely tight spreads to capture it aggressively
-        if confidence_level > 0.98:
+        if confidence_level > 0.99:
             dynamic_spread = self.aggressive_spread
         else:
             # Still use extremely wide spreads even with high confidence
@@ -86,12 +101,18 @@ class MyTradingStrategy(AbstractTradingStrategy):
                 except:
                     position = 0.0
                 
-                # Only trade if we have zero or minimal position (avoid any losses)
+                # Only trade if we have zero position (avoid any losses)
                 if abs(position) > 0:
                     continue
                 
-                # Quadratic inventory penalty to aggressively manage risk
-                inventory_adjustment = np.sign(position) * (position**2) * self.inventory_multiplier
+                # When we have MASSIVE edge, trade like crazy with minimal inventory penalty
+                if confidence_level > 0.99 and deviation > self.mean_reversion_threshold * 2:
+                    # Trade aggressively - minimal inventory penalty
+                    inventory_adjustment = np.sign(position) * (position**2) * 0.001
+                else:
+                    # Normal inventory penalty
+                    inventory_adjustment = np.sign(position) * (position**2) * self.inventory_multiplier
+                
                 adjusted_fair_value = fair_value - inventory_adjustment
 
                 bid_price = adjusted_fair_value - dynamic_spread / 2
