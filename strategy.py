@@ -36,6 +36,14 @@ class MyTradingStrategy(AbstractTradingStrategy):
         self.gamma = 0.1
         # Order book liquidity parameter. Higher kappa = tighter spreads.
         self.kappa = 1.5
+        # --- Order-flow Sentiment Parameters ---
+        self.ema_alpha = 0.3  # weight for recent trades in EMA
+        self.order_flow_ema = 0.0
+        self.sentiment_coeff = 0.002  # price shift per unit of EMA
+
+        # Preserve base parameters so we can scale them dynamically each sub-round
+        self._gamma_base = self.gamma
+        self._kappa_base = self.kappa
         
         # --- Competition Constants ---
         self.TOTAL_ROLLS = 20000
@@ -131,20 +139,50 @@ class MyTradingStrategy(AbstractTradingStrategy):
         # 5. ITERATE AND QUOTE: Loop through products and generate markets.
         time_remaining = (self.SUBROUNDS_PER_ROUND - current_sub_round + 1) / self.SUBROUNDS_PER_ROUND
 
+        # --- ORDER-FLOW SENTIMENT UPDATE ------------------------------------ #
+        try:
+            # Prefer a dedicated API if available
+            recent_trades = marketplace.get_recent_trades(limit=50)  # type: ignore[attr-defined]
+        except AttributeError:
+            # Fallback to entire history if helper not provided
+            recent_trades = marketplace.get_trade_history()[-50:]  # type: ignore[attr-defined]
+
+        net_flow = 0.0
+        for t in recent_trades:
+            # We assume trade objects expose side ("BUY"/"SELL") and quantity
+            if getattr(t, "side", "") == "BUY":
+                net_flow += t.quantity
+            elif getattr(t, "side", "") == "SELL":
+                net_flow -= t.quantity
+
+        # Exponential moving average of net order flow
+        self.order_flow_ema = self.ema_alpha * net_flow + (1 - self.ema_alpha) * self.order_flow_ema
+
+        # Sentiment price shift (capped to avoid extremes)
+        sentiment_shift = max(min(self.order_flow_ema * self.sentiment_coeff, 5.0), -5.0)
+
+        # --- DYNAMIC PARAMETER ADJUSTMENTS ---------------------------------- #
+        # Reduce risk-aversion as we approach the end of the round (so we quote tighter)
+        self.gamma = self._gamma_base * (0.5 + 0.5 * time_remaining)
+        # Increase assumed liquidity as we near the end (tighter spreads)
+        self.kappa = self._kappa_base * (1.5 - 0.5 * time_remaining)
+
         for product in products:
             product_id = product.product_id
             parts = product_id.split(',')
             
             # --- Calculate Theoretical Fair Value (s) ---
             fair_value = 0.0
-            # Correctly parse the product type from the ID string (e.g., 'S,F,5' -> 'F')
+            if len(parts) < 2:
+                continue  # malformed id
             product_type = parts[1]
             
             if product_type == 'F': # Future
                 fair_value = mu_sum
             elif product_type in ['C', 'P']: # Call or Put Option
                 try:
-                    # Correctly parse the strike price (e.g., 'S,C,5,55' -> 55)
+                    if len(parts) < 3:
+                        continue
                     strike_price = float(parts[2])
                     if product_type == 'C':
                         fair_value = self._calculate_call_fair_value(mu_sum, sigma_sum, strike_price)
@@ -155,7 +193,7 @@ class MyTradingStrategy(AbstractTradingStrategy):
 
             # --- Apply Avellaneda-Stoikov Model ---
             q = inventory.get(product_id, 0.0)
-            s = fair_value
+            s = fair_value + sentiment_shift  # apply sentiment bias
             # Use variance of the remaining sum as the volatility term
             sigma_sq_T_minus_t = var_rem 
             
