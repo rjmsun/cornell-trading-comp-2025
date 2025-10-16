@@ -59,17 +59,6 @@ class MyTradingStrategy(AbstractTradingStrategy):
         # As confidence grows, our spread tightens towards a 2.0 minimum.
         dynamic_spread = self.base_spread - (self.base_spread - 2.0) * confidence_level
 
-        # Calculate inventory for each product
-        inventory = {}
-        for p in products:
-            inventory[p.id] = 0.0
-        
-        for trade in my_trades:
-            if hasattr(trade, 'buyer_id') and trade.buyer_id == self.team_name:
-                inventory[trade.product_id] += getattr(trade, 'quantity', 0)
-            elif hasattr(trade, 'seller_id') and trade.seller_id == self.team_name:
-                inventory[trade.product_id] -= getattr(trade, 'quantity', 0)
-
         for product in products:
             fair_value = self.calculate_fair_value(
                 product.id, 
@@ -79,7 +68,12 @@ class MyTradingStrategy(AbstractTradingStrategy):
             )
             
             if fair_value is not None:
-                position = inventory.get(product.id, 0.0)
+                # Use marketplace.my_trades.get_position() directly instead of iterating
+                try:
+                    position = marketplace.my_trades.get_position(product.id)
+                except:
+                    position = 0.0
+                
                 # Quadratic inventory penalty to aggressively manage risk
                 inventory_adjustment = np.sign(position) * (position**2) * self.inventory_multiplier
                 adjusted_fair_value = fair_value - inventory_adjustment
