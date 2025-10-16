@@ -23,7 +23,7 @@ class AbstractTradingStrategy(ABC):
         pass
 
     @abstractmethod
-    def make_market(self, marketplace: Any, training_rolls: Any, my_trades: Any, current_rolls: Any, round_info: Any) -> Dict]:
+    def make_market(self, marketplace: Any, training_rolls: Any, my_trades: Any, current_rolls: Any, round_info: Any) -> Dict:
         pass
 
     @abstractmethod
@@ -117,7 +117,7 @@ class MyTradingStrategy(AbstractTradingStrategy):
         my_trades: List,
         current_rolls: List[int],
         round_info: Any
-    ) -> Dict]:
+    ) -> Dict:
         """
         The core logic for making markets in each subround.
         """
@@ -164,13 +164,13 @@ class MyTradingStrategy(AbstractTradingStrategy):
             
             # --- Calculate Theoretical Fair Value (s) ---
             fair_value = 0.0
-            product_type = parts
+            product_type = parts[0] if parts else ''
             
             if product_type == 'F': # Future
                 fair_value = mu_sum
             elif product_type in ['C', 'P']: # Call or Put Option
                 try:
-                    strike_price = float(parts)
+                    strike_price = float(parts[1]) if len(parts) > 1 else 0.0
                     if product_type == 'C':
                         fair_value = self._calculate_call_fair_value(mu_sum, sigma_sum, strike_price)
                     else: # 'P'
