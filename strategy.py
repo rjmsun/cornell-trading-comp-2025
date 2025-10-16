@@ -17,15 +17,15 @@ class MyTradingStrategy(AbstractTradingStrategy):
         """Initializes the strategy's parameters."""
         super().__init__()
         # Extremely wide base spread - only trade with huge edge
-        self.base_spread = 100.0
+        self.base_spread = 200.0
         # Minimal inventory management when we have edge
-        self.inventory_multiplier = 0.05
+        self.inventory_multiplier = 0.02
         # Total number of dice rolls in a full round
         self.TOTAL_ROLLS = 20000
-        # Only trade when we have EXTREME confidence (very late in the round)
-        self.min_confidence_to_trade = 0.85
+        # Only trade when we have NEAR-CERTAIN confidence (almost end of round)
+        self.min_confidence_to_trade = 0.95
         # When we have massive edge, use extremely tight spreads
-        self.aggressive_spread = 0.5
+        self.aggressive_spread = 0.2
 
     def on_game_start(self, config: Dict[str, Any]) -> None:
         """Called once at the start of the game."""
@@ -60,15 +60,15 @@ class MyTradingStrategy(AbstractTradingStrategy):
         # Confidence grows from 0 to 1 as the round progresses.
         confidence_level = num_current_rolls / self.TOTAL_ROLLS
         
-        # Only trade if we have EXTREME confidence (very late in round)
+        # Only trade if we have NEAR-CERTAIN confidence (almost end of round)
         if confidence_level < self.min_confidence_to_trade:
             return {}
         
         # When we have massive edge, use extremely tight spreads to capture it aggressively
-        if confidence_level > 0.9:
+        if confidence_level > 0.98:
             dynamic_spread = self.aggressive_spread
         else:
-            # Still use wide spreads even with high confidence
+            # Still use extremely wide spreads even with high confidence
             dynamic_spread = self.base_spread
 
         for product in products:
@@ -86,8 +86,8 @@ class MyTradingStrategy(AbstractTradingStrategy):
                 except:
                     position = 0.0
                 
-                # Only trade if we have a tiny position (avoid any significant losses)
-                if abs(position) > 1:
+                # Only trade if we have zero or minimal position (avoid any losses)
+                if abs(position) > 0:
                     continue
                 
                 # Quadratic inventory penalty to aggressively manage risk
