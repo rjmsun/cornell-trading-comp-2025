@@ -16,12 +16,14 @@ class MyTradingStrategy(AbstractTradingStrategy):
     def __init__(self):
         """Initializes the strategy's parameters."""
         super().__init__()
-        # Wider base spread for early-round uncertainty (tightens dynamically)
-        self.base_spread = 5.0
-        # Aggressive inventory management to stay near neutral
-        self.inventory_multiplier = 0.25
+        # Much wider base spread to only trade when we have a clear edge
+        self.base_spread = 15.0
+        # Very aggressive inventory management to stay near neutral
+        self.inventory_multiplier = 0.5
         # Total number of dice rolls in a full round
         self.TOTAL_ROLLS = 20000
+        # Minimum confidence level required to trade (0.0 to 1.0)
+        self.min_confidence_to_trade = 0.3
 
     def on_game_start(self, config: Dict[str, Any]) -> None:
         """Called once at the start of the game."""
@@ -56,8 +58,12 @@ class MyTradingStrategy(AbstractTradingStrategy):
         # Confidence grows from 0 to 1 as the round progresses.
         confidence_level = num_current_rolls / self.TOTAL_ROLLS
         
-        # As confidence grows, our spread tightens towards a 2.0 minimum.
-        dynamic_spread = self.base_spread - (self.base_spread - 2.0) * confidence_level
+        # Only trade if we have sufficient confidence
+        if confidence_level < self.min_confidence_to_trade:
+            return {}
+        
+        # As confidence grows, our spread tightens but stays wide for safety
+        dynamic_spread = self.base_spread - (self.base_spread - 8.0) * confidence_level
 
         for product in products:
             fair_value = self.calculate_fair_value(
@@ -73,6 +79,10 @@ class MyTradingStrategy(AbstractTradingStrategy):
                     position = marketplace.my_trades.get_position(product.id)
                 except:
                     position = 0.0
+                
+                # Only trade if we have a small position (avoid large losses)
+                if abs(position) > 5:
+                    continue
                 
                 # Quadratic inventory penalty to aggressively manage risk
                 inventory_adjustment = np.sign(position) * (position**2) * self.inventory_multiplier
