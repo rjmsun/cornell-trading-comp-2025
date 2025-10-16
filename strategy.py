@@ -16,10 +16,10 @@ class MyTradingStrategy(AbstractTradingStrategy):
     def __init__(self):
         """Initializes the strategy's parameters."""
         super().__init__()
-        # Wider base spread for early-round uncertainty
-        self.base_spread = 6.0
+        # Wider base spread for early-round uncertainty (tightens dynamically)
+        self.base_spread = 5.0
         # Aggressive inventory management to stay near neutral
-        self.inventory_multiplier = 0.2
+        self.inventory_multiplier = 0.25
         # Total number of dice rolls in a full round
         self.TOTAL_ROLLS = 20000
 
@@ -48,21 +48,21 @@ class MyTradingStrategy(AbstractTradingStrategy):
 
         # --- Update Statistical Beliefs ---
         updated_mean = np.mean(all_known_rolls)
-        updated_std = np.std(all_known_rolls)
+        updated_std = np.std(all_known_rolls) if len(all_known_rolls) > 1 else 2886.0
         
         # --- Confidence-Based Spread Adjustment ---
         # Our confidence increases as we see more of the actual rolls.
         num_current_rolls = len(current_rolls)
-        # Confidence factor grows from ~1 to 2 as the round progresses.
-        confidence_factor = 1 + (num_current_rolls / self.TOTAL_ROLLS)
+        # Confidence grows from 0 to 1 as the round progresses.
+        confidence_level = num_current_rolls / self.TOTAL_ROLLS
         
-        # As confidence grows, our spread tightens.
-        dynamic_spread = self.base_spread / confidence_factor
+        # As confidence grows, our spread tightens towards a 2.0 minimum.
+        dynamic_spread = self.base_spread - (self.base_spread - 2.0) * confidence_level
 
         # Calculate inventory for each product
         inventory = {}
         for p in products:
-            inventory[p.product_id] = 0.0
+            inventory[p.id] = 0.0
         
         for trade in my_trades:
             if hasattr(trade, 'buyer_id') and trade.buyer_id == self.team_name:
@@ -72,14 +72,14 @@ class MyTradingStrategy(AbstractTradingStrategy):
 
         for product in products:
             fair_value = self.calculate_fair_value(
-                product.product_id, 
+                product.id, 
                 updated_mean, 
                 updated_std,
                 round_info
             )
             
             if fair_value is not None:
-                position = inventory.get(product.product_id, 0.0)
+                position = inventory.get(product.id, 0.0)
                 # Quadratic inventory penalty to aggressively manage risk
                 inventory_adjustment = np.sign(position) * (position**2) * self.inventory_multiplier
                 adjusted_fair_value = fair_value - inventory_adjustment
@@ -89,7 +89,7 @@ class MyTradingStrategy(AbstractTradingStrategy):
                 
                 # Ensure bid < ask and both are positive
                 if bid_price < ask_price and bid_price > 0:
-                    markets[product.product_id] = (round(bid_price, 1), round(ask_price, 1))
+                    markets[product.id] = (round(bid_price, 1), round(ask_price, 1))
 
         return markets
 
@@ -113,7 +113,8 @@ class MyTradingStrategy(AbstractTradingStrategy):
                 if len(parts) < 3:
                     return None
                 strike = float(parts[2])
-                volatility = std * np.sqrt(self.TOTAL_ROLLS)  # Scale volatility for the sum
+                # Use std directly per requested spec
+                volatility = std
                 
                 total_subrounds = round_info.get("num_sub_rounds", 10) if hasattr(round_info, 'get') else 10
                 current_sub_round = round_info.get("current_sub_round", 1) if hasattr(round_info, 'get') else 1
