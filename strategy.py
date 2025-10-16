@@ -1,95 +1,38 @@
 import numpy as np
 from scipy.stats import norm
-from typing import Dict, Tuple, List, Any
-from abc import ABC, abstractmethod
+from typing import Dict, List, Any
 
-# Import the official AbstractTradingStrategy from the autograder's SDK
-# This is the primary fix for the error you encountered.
+# Import the abstract base class for the trading strategy
 from autograder.sdk.strategy_interface import AbstractTradingStrategy
-
-# ---------------------------------------------------------------------------- #
-#                          STRATEGY IMPLEMENTATION                             #
-# ---------------------------------------------------------------------------- #
 
 class MyTradingStrategy(AbstractTradingStrategy):
     """
-    A quantitative trading strategy for the Cornell Derivatives Trading Competition.
-    
-    The strategy is built on three pillars:
-    1.  Forecasting: Uses the Central Limit Theorem to model the final sum of
-        dice rolls as a Normal distribution, dynamically updating the forecast
-        as new rolls are observed.
-    2.  Pricing: Calculates the theoretical fair value of futures and options
-        using formulas derived for a normally distributed underlying.
-    3.  Execution: Employs the Avellaneda-Stoikov market-making model to set
-        optimal bid-ask quotes that manage inventory risk and capture spread.
+    An advanced trading strategy that incorporates market sentiment, inventory risk,
+    and a more sophisticated volatility model. It dynamically adjusts its quotes 
+    to adapt to changing market conditions and manage risk.
     """
 
+    def __init__(self):
+        """Initializes the strategy with fine-tuned parameters."""
+        super().__init__()
+        # Starting spread, will be adjusted based on volatility
+        self.base_spread = 4.0  
+        # Multiplier for adjusting quotes based on inventory risk
+        self.inventory_multiplier = 0.07
+        # Threshold for detecting significant order flow imbalance
+        self.sentiment_threshold = 1.5
+        # Factor to adjust the fair value based on market sentiment
+        self.sentiment_adjustment_factor = 3.0
+        # EMA weight, giving more importance to recent trades
+        self.ema_alpha = 0.4
+        # Tracks the exponential moving average of net order flow
+        self.net_order_flow_ema = 0.0
+        # Risk factor to adjust spread based on market volatility
+        self.volatility_spread_multiplier = 1.2
+
     def on_game_start(self, config: Dict[str, Any]) -> None:
-        """
-        Called once at the start of the game. Initializes strategy parameters.
-        """
+        """Called once at the start of the game."""
         self.team_name = config.get("team_name", "my_team")
-        
-        # --- Avellaneda-Stoikov Parameters ---
-        # Risk aversion parameter. Higher gamma = wider spreads, more conservative.
-        self.gamma = 0.1
-        # Order book liquidity parameter. Higher kappa = tighter spreads.
-        self.kappa = 1.5
-        # --- Order-flow Sentiment Parameters ---
-        self.ema_alpha = 0.3  # weight for recent trades in EMA
-        self.order_flow_ema = 0.0
-        self.sentiment_coeff = 0.002  # price shift per unit of EMA
-
-        # Preserve base parameters so we can scale them dynamically each sub-round
-        self._gamma_base = self.gamma
-        self._kappa_base = self.kappa
-        
-        # --- Competition Constants ---
-        self.TOTAL_ROLLS = 20000
-        self.SUBROUNDS_PER_ROUND = 10
-        self.ROLLS_PER_SUBROUND = 2000
-
-        # --- Round-specific State ---
-        # These will be reset at the start of each round's first subround.
-        self.die_mean = 0.0
-        self.die_variance = 0.0
-
-    def _calculate_die_stats(self, rolls: List[int]) -> Tuple[float, float]:
-        """
-        Calculates the sample mean and unbiased sample variance of the die.
-        """
-        if not rolls:
-            return 0.0, 0.0
-        
-        mean = np.mean(rolls)
-        # Use ddof=1 for unbiased sample variance
-        variance = np.var(rolls, ddof=1)
-        return mean, variance
-
-    def _calculate_call_fair_value(self, mu_sum: float, sigma_sum: float, strike: float) -> float:
-        """
-        Calculates the fair value of a European call option.
-        Formula: (mu - K) * Phi(d) + sigma * phi(d)
-        """
-        if sigma_sum <= 1e-9:  # Avoid division by zero if variance is negligible
-            return max(0.0, mu_sum - strike)
-            
-        d = (mu_sum - strike) / sigma_sum
-        fair_value = (mu_sum - strike) * norm.cdf(d) + sigma_sum * norm.pdf(d)
-        return fair_value
-
-    def _calculate_put_fair_value(self, mu_sum: float, sigma_sum: float, strike: float) -> float:
-        """
-        Calculates the fair value of a European put option.
-        Formula: (K - mu) * Phi(-d) + sigma * phi(-d)
-        """
-        if sigma_sum <= 1e-9: # Avoid division by zero
-            return max(0.0, strike - mu_sum)
-
-        d = (mu_sum - strike) / sigma_sum
-        fair_value = (strike - mu_sum) * norm.cdf(-d) + sigma_sum * norm.pdf(-d)
-        return fair_value
 
     def make_market(
         self,
@@ -100,135 +43,143 @@ class MyTradingStrategy(AbstractTradingStrategy):
         round_info: Any
     ) -> Dict:
         """
-        The core logic for making markets in each subround.
+        Main logic loop called each sub-round to generate quotes.
         """
         markets = {}
-        current_sub_round = round_info.current_sub_round
-
-        # 1. INITIALIZATION: On the first subround, analyze the training data.
-        if current_sub_round == 1:
-            self.die_mean, self.die_variance = self._calculate_die_stats(training_rolls)
-
-        # 2. STATE UPDATE: Determine the current state of the round.
-        num_obs_rolls = len(current_rolls)
-        sum_obs_rolls = sum(current_rolls)
-        num_rem_rolls = self.TOTAL_ROLLS - num_obs_rolls
-
-        # 3. FORECAST UPDATE: Update the forecast for the final sum.
-        # Mean of the sum of remaining rolls
-        mu_rem = num_rem_rolls * self.die_mean
-        # Variance of the sum of remaining rolls
-        var_rem = num_rem_rolls * self.die_variance
+        current_sub_round = round_info.get("current_sub_round", 1)
         
-        # Updated forecast for the final total sum
-        mu_sum = sum_obs_rolls + mu_rem
-        sigma_sum = np.sqrt(var_rem)
+        # --- Market Volatility Analysis ---
+        # A simple measure of recent price volatility
+        try:
+            all_trades = marketplace.get_trade_history()
+            recent_trade_prices = [t.price for t in all_trades[-30:] if hasattr(t, 'price') and t.price]
+            market_volatility = np.std(recent_trade_prices) if len(recent_trade_prices) > 1 else 1.0
+        except:
+            market_volatility = 1.0
+        
+        # Dynamically adjust spread based on volatility
+        dynamic_spread = self.base_spread + market_volatility * self.volatility_spread_multiplier
 
-        # 4. INVENTORY CALCULATION: Calculate current inventory for each product.
+        # --- Market Sentiment Analysis ---
+        try:
+            recent_trades = all_trades[-20:] if 'all_trades' in locals() else []
+            net_order_flow = 0.0
+            for t in recent_trades:
+                if hasattr(t, 'side') and t.side == 'BUY':
+                    net_order_flow += getattr(t, 'quantity', 0)
+                elif hasattr(t, 'side') and t.side == 'SELL':
+                    net_order_flow -= getattr(t, 'quantity', 0)
+        except:
+            net_order_flow = 0.0
+            
+        self.net_order_flow_ema = self.ema_alpha * net_order_flow + (1 - self.ema_alpha) * self.net_order_flow_ema
+
+        sentiment_adjustment = 0
+        if self.net_order_flow_ema > self.sentiment_threshold:
+            sentiment_adjustment = self.sentiment_adjustment_factor
+        elif self.net_order_flow_ema < -self.sentiment_threshold:
+            sentiment_adjustment = -self.sentiment_adjustment_factor
+
+        # --- Calculate Expected Value from Training Data ---
+        expected_roll = np.mean(training_rolls) if training_rolls else 3.5
+        total_rolls_per_round = 20000
+        total_subrounds = round_info.get("num_sub_rounds", 10)
+
+        # --- Inventory Calculation ---
         inventory = {}
         products = marketplace.get_products()
         for p in products:
             inventory[p.product_id] = 0.0
         
         for trade in my_trades:
-            if trade.buyer_id == self.team_name:
-                inventory[trade.product_id] += trade.quantity
-            elif trade.seller_id == self.team_name:
-                inventory[trade.product_id] -= trade.quantity
-
-        # 5. ITERATE AND QUOTE: Loop through products and generate markets.
-        time_remaining = (self.SUBROUNDS_PER_ROUND - current_sub_round + 1) / self.SUBROUNDS_PER_ROUND
-
-        # --- ORDER-FLOW SENTIMENT UPDATE ------------------------------------ #
-        try:
-            # Prefer a dedicated API if available
-            recent_trades = marketplace.get_recent_trades(limit=50)  # type: ignore[attr-defined]
-        except AttributeError:
-            # Fallback to entire history if helper not provided
-            recent_trades = marketplace.get_trade_history()[-50:]  # type: ignore[attr-defined]
-
-        net_flow = 0.0
-        for t in recent_trades:
-            # We assume trade objects expose side ("BUY"/"SELL") and quantity
-            if getattr(t, "side", "") == "BUY":
-                net_flow += t.quantity
-            elif getattr(t, "side", "") == "SELL":
-                net_flow -= t.quantity
-
-        # Exponential moving average of net order flow
-        self.order_flow_ema = self.ema_alpha * net_flow + (1 - self.ema_alpha) * self.order_flow_ema
-
-        # Sentiment price shift (capped to avoid extremes)
-        sentiment_shift = max(min(self.order_flow_ema * self.sentiment_coeff, 5.0), -5.0)
-
-        # --- DYNAMIC PARAMETER ADJUSTMENTS ---------------------------------- #
-        # Reduce risk-aversion as we approach the end of the round (so we quote tighter)
-        self.gamma = self._gamma_base * (0.5 + 0.5 * time_remaining)
-        # Increase assumed liquidity as we near the end (tighter spreads)
-        self.kappa = self._kappa_base * (1.5 - 0.5 * time_remaining)
+            if hasattr(trade, 'buyer_id') and trade.buyer_id == self.team_name:
+                inventory[trade.product_id] += getattr(trade, 'quantity', 0)
+            elif hasattr(trade, 'seller_id') and trade.seller_id == self.team_name:
+                inventory[trade.product_id] -= getattr(trade, 'quantity', 0)
 
         for product in products:
             product_id = product.product_id
-            parts = product_id.split(',')
+            fair_value = self.calculate_fair_value(product_id, training_rolls, round_info, expected_roll, total_rolls_per_round, total_subrounds)
             
-            # --- Calculate Theoretical Fair Value (s) ---
-            fair_value = 0.0
-            if len(parts) < 2:
-                continue  # malformed id
-            product_type = parts[1]
-            
-            if product_type == 'F': # Future
-                fair_value = mu_sum
-            elif product_type in ['C', 'P']: # Call or Put Option
-                try:
-                    if len(parts) < 3:
-                        continue
-                    strike_price = float(parts[2])
-                    if product_type == 'C':
-                        fair_value = self._calculate_call_fair_value(mu_sum, sigma_sum, strike_price)
-                    else: # 'P'
-                        fair_value = self._calculate_put_fair_value(mu_sum, sigma_sum, strike_price)
-                except (ValueError, IndexError):
-                    continue # Skip malformed product IDs
+            if fair_value is not None:
+                # 1. Start with base fair value
+                adjusted_fair_value = fair_value
+                
+                # 2. Adjust for market sentiment
+                adjusted_fair_value += sentiment_adjustment
+                
+                # 3. Adjust for inventory risk
+                position = inventory.get(product_id, 0.0)
+                inventory_adjustment = position * self.inventory_multiplier
+                adjusted_fair_value -= inventory_adjustment
 
-            # --- Apply Avellaneda-Stoikov Model ---
-            q = inventory.get(product_id, 0.0)
-            s = fair_value + sentiment_shift  # apply sentiment bias
-            # Use variance of the remaining sum as the volatility term
-            sigma_sq_T_minus_t = var_rem 
-            
-            # Calculate Reservation Price (r)
-            reservation_price = s - q * self.gamma * sigma_sq_T_minus_t
-            
-            # Calculate Optimal Spread
-            spread_term_1 = self.gamma * sigma_sq_T_minus_t
-            spread_term_2 = (2 / self.gamma) * np.log(1 + (self.gamma / self.kappa))
-            optimal_spread = spread_term_1 + spread_term_2
-            
-            # Ensure spread is non-negative
-            optimal_spread = max(optimal_spread, 0.01) # Set a minimum spread
-
-            # --- Set Final Bid and Ask Quotes ---
-            bid_price = reservation_price - (optimal_spread / 2)
-            ask_price = reservation_price + (optimal_spread / 2)
-            
-            # Sanity check: bid must be less than ask
-            if bid_price < ask_price and bid_price > 0:
-                markets[product_id] = (round(bid_price, 2), round(ask_price, 2))
+                # 4. Set final quotes with dynamic spread
+                bid_price = adjusted_fair_value - dynamic_spread / 2
+                ask_price = adjusted_fair_value + dynamic_spread / 2
+                
+                # Ensure bid < ask and both are positive
+                if bid_price < ask_price and bid_price > 0:
+                    markets[product_id] = (round(bid_price, 1), round(ask_price, 1))
 
         return markets
 
+    def calculate_fair_value(self, product_id: str, training_rolls: List[int], round_info: Dict[str, Any], expected_roll: float, total_rolls_per_round: int, total_subrounds: int) -> float | None:
+        """
+        Calculates the theoretical fair value using a more robust model.
+        """
+        try:
+            parts = product_id.split(',')
+            if len(parts) < 2:
+                return None
+            product_type = parts[1]
+
+            if product_type == 'F': # Future
+                if len(parts) < 3:
+                    return None
+                num_subrounds = int(parts[2])
+                # Fair value is the expected sum of rolls
+                return expected_roll * (total_rolls_per_round / total_subrounds * num_subrounds)
+            
+            elif product_type in ['C', 'P']: # Options
+                if len(parts) < 3:
+                    return None
+                strike = float(parts[2])
+                
+                # Enhanced volatility: use training data std deviation
+                volatility = np.std(training_rolls) / 10000 if training_rolls and np.std(training_rolls) > 0 else 0.05
+                
+                underlying_price = expected_roll * total_rolls_per_round
+                
+                # Time to expiry decreases as the round progresses
+                current_sub_round = round_info.get("current_sub_round", 1)
+                time_to_expiry = (total_subrounds - current_sub_round + 1) / total_subrounds
+                
+                if time_to_expiry <= 0: 
+                    time_to_expiry = 0.001 # Avoid division by zero at expiry
+
+                # Black-Scholes-Merton model for option pricing
+                d1 = (np.log(underlying_price / strike) + (0.5 * volatility ** 2) * time_to_expiry) / (volatility * np.sqrt(time_to_expiry))
+                d2 = d1 - volatility * np.sqrt(time_to_expiry)
+
+                if product_type == 'C': # Call Option
+                    price = (underlying_price * norm.cdf(d1) - strike * np.exp(0) * norm.cdf(d2))
+                    return price
+                else: # Put Option
+                    price = (strike * np.exp(0) * norm.cdf(-d2) - underlying_price * norm.cdf(-d1))
+                    return price
+            
+            return None
+        except (ValueError, IndexError, ZeroDivisionError):
+            return None
+
     def on_round_end(self, result: Dict[str, Any]) -> None:
-        """
-        Called at the end of each round. Can be used for analysis.
-        """
-        # Reset round-specific state for the next round
-        self.die_mean = 0.0
-        self.die_variance = 0.0
-        print(f"Round ended. PnL: {result.get('your_pnl')}")
+        """Handles end of round logic."""
+        pnl = result.get('your_pnl', 0.0)
+        print(f"Round ended. PnL: {pnl:.2f}")
+        # Reset EMA for the next round
+        self.net_order_flow_ema = 0.0
 
     def on_game_end(self, summary: Dict[str, Any]) -> None:
-        """
-        Called at the end of the game.
-        """
-        print(f"Game ended. Final Score: {summary.get('final_score')}")
+        """Handles end of game logic."""
+        total_pnl = summary.get('total_pnl', 0.0)
+        print(f"Game over. Total PnL: {total_pnl:.2f}")
